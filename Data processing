@@ -1,0 +1,64 @@
+'''Split and enhance audio data while converting it into a logarithmic Mel spectrogram'''
+import os
+import librosa
+import numpy as np
+import pandas as pd
+
+
+def sliding_window(arr, window_size, step):
+    n_rows, n_cols = arr.shape
+    windows = []
+
+    for row in arr:
+        row_windows = [
+            row[i:i + window_size] for i in range(0, n_cols - window_size + 1, step)
+        ]
+        windows.append(row_windows)
+
+    return np.array(windows)
+
+def Data_process():
+    folder_path = 'D:\Leakage'
+    Filter_Bank = []
+    filenames = []
+
+    for filename in os.listdir(folder_path):
+        if filename.endswith('.wav'):
+            print(filename)
+            wav_file_path = os.path.join(folder_path, filename)
+            signal, sr = librosa.load(wav_file_path, sr=None)
+            signal = signal.flatten()[:40960]
+            # signal = signal.flatten()
+
+            # Signal sliding window processing
+            sample = signal.reshape(1, -1)
+            print(sample.shape)
+
+            # Set window size and step size
+            window_size = 8192
+            step = 8192
+
+            # Perform segmentation
+            result = sliding_window(sample, window_size, step)
+
+            print(result.shape)
+            # Data_augment = result.reshape((sample.shape[1]//8192) * 2, 8192)
+            Data_augment = result.reshape(-1, 8192)
+            print(Data_augment.shape)
+            for i in range(0, (sample.shape[1]//8192)):
+                S = librosa.feature.melspectrogram(y=Data_augment[i], sr=8192, n_mels=128, n_fft=256, hop_length=128)
+                mel_basis = librosa.filters.mel(sr=8192, n_fft=129, n_mels=128).T
+                log_mel_spec = np.log(np.dot(mel_basis, S) + 1e-10)
+
+                Filter_Bank.append(log_mel_spec)
+                filenames.append(filename)
+                print(log_mel_spec.shape)
+    Filter_Bank = np.array(Filter_Bank).reshape(len(Filter_Bank), 4225)
+    Filter_Bank = np.hstack([Filter_Bank, np.ones((Filter_Bank.shape[0], 1))])  # Add label column 1
+    # Filter_Bank = np.hstack([Filter_Bank, np.zeros((Filter_Bank.shape[0], 1))]) # Add label column 0
+    return Filter_Bank, filenames
+
+leak_data, filenames = Data_process()
+
+Data = pd.DataFrame(leak_data)
+Data.to_csv("D:\\Leakage-5s.csv", index=False)
