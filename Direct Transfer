@@ -1,0 +1,95 @@
+import numpy as np
+import pandas as pd
+from tensorflow.keras.models import load_model
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import KFold  # For K-Fold cross-validation
+from sklearn.metrics import roc_curve, auc, confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
+
+# Load the dataset
+data = pd.read_csv("D:\\North_Data.csv")
+
+X = np.array(data.iloc[:, :-1])
+y = np.array(data.iloc[:, -1])
+
+# Standardize the data
+scaler = StandardScaler()
+
+# Standardize the features (pixel values)
+X = scaler.fit_transform(X)
+
+# Reshape to original shape for CNN input
+X = X.reshape(data.shape[0], 65, 65, 1)
+
+# Create an empty list to store evaluation results for each fold
+results = []
+
+# Define KFold cross-validation with 5 splits
+kf = KFold(n_splits=5, shuffle=False)
+
+# Loop through each fold
+for fold, (train_val_idx, test_idx) in enumerate(kf.split(X), 1):
+    print(f"Training for fold {fold}...")
+
+    # Split data into training+validation (80%) and test (20%) sets
+    X_train_val, X_test = X[train_val_idx], X[test_idx]
+    y_train_val, y_test = y[train_val_idx], y[test_idx]
+
+    # Further split the training+validation set into 7:1 (train:validation)
+    split_index = int(0.875 * len(X_train_val))  # 87.5% for training (7:8 ratio)
+    X_train, X_val = X_train_val[:split_index], X_train_val[split_index:]
+    y_train, y_val = y_train_val[:split_index], y_train_val[split_index:]
+
+    # Load the pre-trained model (in this case, we assume it's from a previous experiment)
+    model = load_model("South.h5")
+
+    # Predict on the test set
+    y_pred = model.predict(X_test)  # Predict on the test set
+    y_pred_binary = np.round(y_pred).astype(int)  # Round predictions to 0 or 1 for binary classification
+
+    # Calculate various performance metrics
+    accuracy = accuracy_score(y_test, y_pred_binary)  # Accuracy
+    precision = precision_score(y_test, y_pred_binary)  # Precision
+    recall = recall_score(y_test, y_pred_binary)  # Recall
+    f1 = f1_score(y_test, y_pred_binary)  # F1 score
+
+    # Compute ROC curve and AUC
+    fpr, tpr, _ = roc_curve(y_test, y_pred)  # False positive rate and true positive rate
+    roc_auc = auc(fpr, tpr)  # Area under the ROC curve
+
+    # Compute confusion matrix
+    conf_matrix = confusion_matrix(y_test, y_pred_binary)  # Confusion matrix
+    specificity = conf_matrix[0, 0] / (conf_matrix[0, 0] + conf_matrix[0, 1])  # Specificity
+    sensitivity = conf_matrix[1, 1] / (conf_matrix[1, 0] + conf_matrix[1, 1])  # Sensitivity
+
+    # Print the evaluation metrics for the current fold
+    print(f"Fold {fold} - Accuracy:", accuracy)
+    print(f"Fold {fold} - Precision:", precision)
+    print(f"Fold {fold} - Recall:", recall)
+    print(f"Fold {fold} - F1 Score:", f1)
+    print(f"Fold {fold} - AUC:", roc_auc)
+    print(f"Fold {fold} - Sensitivity:", sensitivity)
+    print(f"Fold {fold} - Specificity:", specificity)
+    print(f"Fold {fold} - Confusion Matrix:\n", conf_matrix)
+
+    # Store the metrics in a dictionary
+    result_dict = {
+        'Fold': fold,
+        'Accuracy': accuracy,
+        'Precision': precision,
+        'Recall': recall,
+        'F1 Score': f1,
+        'Sensitivity': sensitivity,
+        'Specificity': specificity,
+        'Conf_matrix': conf_matrix
+    }
+
+    # Append the result to the list
+    results.append(result_dict)
+
+# Convert the results to a DataFrame
+results_df = pd.DataFrame(results)
+
+# Export the results to an Excel file
+results_df.to_excel("D:\\South_DT_North.xlsx", index=False)
+
+print("Evaluation results have been saved to 'South_local_cross_validation_results.xlsx'.")
