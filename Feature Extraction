@@ -1,0 +1,165 @@
+import numpy as np
+import pandas as pd
+from sklearn.metrics import roc_curve, auc, accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+from tensorflow.keras.layers import Dense
+from sklearn.preprocessing import StandardScaler
+from tensorflow.keras.optimizers import Adam
+from sklearn.model_selection import KFold
+from tensorflow.keras.models import load_model
+import matplotlib.pyplot as plt
+import tensorflow as tf
+# Load dataset
+data = pd.read_csv("D:\\L-diameter.csv")
+X = np.array(data.iloc[:, :-1])
+y = np.array(data.iloc[:, -1])
+
+# Standardize the data
+scaler = StandardScaler()
+
+# Standardize each sample
+X = scaler.fit_transform(X)
+
+# Reshape to original shape for CNN input
+X = X.reshape(data.shape[0], 65, 65, 1)
+
+# Focal Loss Implementation
+def focal_loss(gamma=2., alpha=0.25):
+    """
+    Focal Loss for binary classification.
+    Args:
+    gamma (float): Focusing parameter, default is 2.
+    alpha (float): Balance factor, default is 0.25.
+    """
+    def focal_loss_fixed(y_true, y_pred):
+        # Clip predictions to prevent log(0)
+        y_pred = tf.clip_by_value(y_pred, tf.keras.backend.epsilon(), 1 - tf.keras.backend.epsilon())
+
+        # Compute cross entropy loss
+        cross_entropy_loss = -y_true * tf.math.log(y_pred) - (1 - y_true) * tf.math.log(1 - y_pred)
+
+        # Compute modulating factor (1 - p_t)^gamma
+        modulating_factor = tf.pow(1 - y_pred, gamma)
+
+        # Apply focal loss formula
+        loss = alpha * modulating_factor * cross_entropy_loss
+
+        return tf.reduce_sum(loss, axis=-1)
+
+    return focal_loss_fixed
+
+# Create an empty list to store evaluation results
+results = []
+
+# Define KFold cross-validation (5 folds)
+kf = KFold(n_splits=5, shuffle=True, random_state=42)
+
+for fold, (train_val_idx, test_idx) in enumerate(kf.split(X), 1):
+    print(f"Training for fold {fold}...")
+
+    # Split data into training+validation (80%) and test (20%)
+    X_train_val, X_test = X[train_val_idx], X[test_idx]
+    y_train_val, y_test = y[train_val_idx], y[test_idx]
+
+    # Further split the training+validation set into 7:1 (train:validation)
+    split_index = int(0.875 * len(X_train_val))  # 87.5% for training (7:8 ratio)
+    X_train, X_val = X_train_val[:split_index], X_train_val[split_index:]
+    y_train, y_val = y_train_val[:split_index], y_train_val[split_index:]
+
+    # Load pre-trained model
+    original_model = load_model("S_diameter.h5")
+    original_model.summary()
+
+    # Freeze all layers up to the fully connected layers
+    for layer in original_model.layers:
+        # Check if the layer is a Dense layer (assuming CNN before Dense layers)
+        if isinstance(layer, Dense):
+            break
+        layer.trainable = False
+
+    # Ensure only the fully connected layers and the output layer are trainable
+    for layer in original_model.layers:
+        if isinstance(layer, Dense):
+            layer.trainable = True
+
+    # Recompile the model after freezing layers
+    original_model.compile(optimizer=Adam(learning_rate=1e-3),
+                           loss=focal_loss(gamma=2., alpha=0.25),
+                           metrics=['accuracy'])
+
+    # Fit the model
+    history = original_model.fit(X_train, y_train, epochs=200, batch_size=32, validation_data=(X_val, y_val), verbose=2)
+
+    # Save the model
+    original_model.save(f"S-diameter_FE_L-diameter_fold{fold}.h5")
+
+    # Evaluate the model
+    y_pred = original_model.predict(X_test)  # Predict on test set
+    y_pred_binary = np.round(y_pred).astype(int)  # Convert predictions to binary (0 or 1)
+
+    # Calculate evaluation metrics
+    accuracy = accuracy_score(y_test, y_pred_binary)  # Accuracy
+    precision = precision_score(y_test, y_pred_binary)  # Precision
+    recall = recall_score(y_test, y_pred_binary)  # Recall
+    f1 = f1_score(y_test, y_pred_binary)  # F1 Score
+
+    # Calculate ROC curve and AUC
+    fpr, tpr, _ = roc_curve(y_test, y_pred)  # Calculate false positive rate and true positive rate
+    roc_auc = auc(fpr, tpr)  # Calculate AUC score
+
+    # Compute confusion matrix
+    conf_matrix = confusion_matrix(y_test, y_pred_binary)  # Confusion matrix
+    specificity = conf_matrix[0, 0] / (conf_matrix[0, 0] + conf_matrix[0, 1])  # Specificity
+    sensitivity = conf_matrix[1, 1] / (conf_matrix[1, 0] + conf_matrix[1, 1])  # Sensitivity
+
+    # Print evaluation metrics
+    print(f"Fold {fold} - Accuracy:", accuracy)
+    print(f"Fold {fold} - Precision:", precision)
+    print(f"Fold {fold} - Recall:", recall)
+    print(f"Fold {fold} - F1 Score:", f1)
+    print(f"Fold {fold} - AUC:", roc_auc)
+    print(f"Fold {fold} - Sensitivity:", sensitivity)
+    print(f"Fold {fold} - Specificity:", specificity)
+    print(f"Fold {fold} - Confusion Matrix:\n", conf_matrix)
+
+    # Store results in a dictionary
+    result_dict = {
+        'Fold': fold,
+        'Accuracy': accuracy,
+        'Precision': precision,
+        'Recall': recall,
+        'F1 Score': f1,
+        'Sensitivity': sensitivity,
+        'Specificity': specificity,
+        'Conf_matrix': conf_matrix
+    }
+
+    # Append results to the list
+    results.append(result_dict)
+
+    # Plot training history
+    plt.figure(figsize=(12, 6))
+    plt.subplot(1, 2, 1)
+    plt.plot(history.history['loss'], label='Training Loss')
+    plt.plot(history.history['val_loss'], label='Validation Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.title('Training and Validation Loss')
+    plt.legend()
+
+    # Plot ROC curve
+    plt.subplot(1, 2, 2)
+    plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.4f})')
+    plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('Receiver Operating Characteristic (ROC)')
+    plt.legend(loc="lower right")
+    plt.show()
+
+# Convert results to DataFrame
+results_df = pd.DataFrame(results)
+
+# Export results to Excel
+results_df.to_excel("D:\\S-diameter_FE_L-diameter_results.xlsx", index=False)
+
+print("Evaluation results have been saved to 'S-diameter_FE_L-diameter_results.xlsx'.")
